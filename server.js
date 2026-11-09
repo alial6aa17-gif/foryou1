@@ -6,6 +6,9 @@ const PORT = process.env.PORT || 3000;
 const PUBLISH_KEY = process.env.PUBLISH_KEY || '';
 const DATA_DIR = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(__dirname, 'data');
 const PUB = path.join(__dirname, 'public');
+// يدور على الصفحة الرئيسية بعدة أماكن (حتى لو انرفع الملف بمكان مختلف على GitHub)
+const INDEXES = [path.join(PUB, 'index.html'), path.join(__dirname, 'puplic', 'index.html'), path.join(__dirname, 'index.html')];
+const findIndex = () => INDEXES.find(f => { try { return fs.statSync(f).isFile(); } catch (e) { return false; } }) || INDEXES[0];
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
 const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; frame-src https://www.youtube-nocookie.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 
@@ -88,7 +91,7 @@ http.createServer(async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
     let f = path.normalize(path.join(PUB, p));
     if (!f.startsWith(PUB)) return send(res, 403, 'Forbidden');
-    if (p.endsWith('/') || !path.extname(p)) f = path.join(PUB, 'index.html');
+    if (p.endsWith('/') || !path.extname(p)) f = findIndex();
     serveFile(req, res, f);
   } catch (e) { console.error(e); if (!res.headersSent) send(res, 500, { error: 'server error' }); }
 }).listen(PORT, '0.0.0.0', () => console.log('FOR YOU listening on ' + PORT + (PUBLISH_KEY ? ' (publish enabled)' : ' (PUBLISH_KEY not set)') + ' data=' + DATA_DIR));
