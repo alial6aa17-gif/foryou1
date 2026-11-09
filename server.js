@@ -25,13 +25,16 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest();
 const authed = req => PUBLISH_KEY && crypto.timingSafeEqual(sha(req.headers['x-publish-key'] || ''), sha(PUBLISH_KEY));
 function send(res, code, body, headers) { const h = Object.assign({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'DENY' }, headers || {}); if (typeof body === 'object' && !Buffer.isBuffer(body)) { body = JSON.stringify(body); h['Content-Type'] = 'application/json; charset=utf-8'; h['Cache-Control'] = 'no-store'; } res.writeHead(code, h); res.end(body); }
 function readBody(req, max) { return new Promise((ok, no) => { let n = 0, bad = false; const c = []; req.on('data', d => { n += d.length; if (bad) return; if (n > max) { bad = true; no(Object.assign(new Error('big'), { code: 413 })); } else c.push(d); }); req.on('end', () => { if (!bad) ok(Buffer.concat(c).toString('utf8')); }); req.on('error', no); }); }
-const THEMES = ['rose', 'gold', 'night', 'lilac', 'peach'];
+const THEMES = ['rose', 'gold', 'night', 'lilac', 'peach'], LAYS = ['classic', 'love', 'bday', 'occ'];
+const AUD = path.join(DATA_DIR, 'audio'), AEXT = { mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav' };
+function readBuf(req, max) { return new Promise((ok, no) => { let n = 0, bad = false; const c = []; req.on('data', d => { n += d.length; if (bad) return; if (n > max) { bad = true; no(Object.assign(new Error('big'), { code: 413 })); } else c.push(d); }); req.on('end', () => { if (!bad) ok(Buffer.concat(c)); }); req.on('error', no); }); }
+function sniff(b) { if (b.length < 12) return null; const s = (a, z) => b.slice(a, z).toString('latin1'); if (s(0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'mp3'; if (s(4, 8) === 'ftyp') return 'm4a'; if (s(0, 4) === 'OggS') return 'ogg'; if (s(0, 4) === 'RIFF' && s(8, 12) === 'WAVE') return 'wav'; return null; }
 const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : '';
 function clean(d) {
   if (!d || typeof d !== 'object') return null;
   const imgs = Array.isArray(d.imgs) ? d.imgs.slice(0, 8).filter(s => typeof s === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(s) && s.length < 900000) : [];
-  const url = u => /^https?:\/\/[^\s]+$/i.test(u) ? u.slice(0, 500) : '';
-  return { to: str(d.to, 80), from: str(d.from, 80), occ: str(d.occ, 40), msg: str(d.msg, 3000), music: url(str(d.music, 500)), date: /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : '', dlabel: str(d.dlabel, 80), theme: THEMES.includes(d.theme) ? d.theme : 'rose', color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '', imgs, disabled: !!d.disabled };
+  const url = u => /^https?:\/\/[^\s]+$/i.test(u) ? u.slice(0, 500) : (/^\/media\/[0-9a-f]{32}\.(mp3|m4a|ogg|wav)$/.test(u) ? u : '');
+  return { to: str(d.to, 80), from: str(d.from, 80), occ: str(d.occ, 40), msg: str(d.msg, 3000), music: url(str(d.music, 500)), date: /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : '', dlabel: str(d.dlabel, 80), theme: THEMES.includes(d.theme) ? d.theme : 'rose', lay: LAYS.includes(d.lay) ? d.lay : 'classic', color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '', imgs, disabled: !!d.disabled };
 }
 const tokOK = t => /^[0-9a-f]{32}$/.test(t);
 
@@ -63,6 +66,24 @@ http.createServer(async (req, res) => {
       if (!PUBLISH_KEY) return send(res, 503, { error: 'publish disabled' });
       if (limited(ip, 'k', 15)) return send(res, 429, { error: 'slow down' });
       return authed(req) ? send(res, 200, { ok: true }) : send(res, 401, { error: 'bad key' });
+    }
+    if (p === '/api/audio' && req.method === 'POST') {
+      if (!PUBLISH_KEY) return send(res, 503, { error: 'publish disabled' });
+      if (limited(ip, 'a', 10)) return send(res, 429, { error: 'slow down' });
+      if (!authed(req)) return send(res, 401, { error: 'bad key' });
+      if (!persistent) return send(res, 507, { error: 'no storage' });
+      let b; try { b = await readBuf(req, 10 * 1024 * 1024); } catch (e) { return send(res, 413, { error: 'too large' }); }
+      const ext = sniff(b); if (!ext) return send(res, 415, { error: 'unsupported' });
+      try { fs.mkdirSync(AUD, { recursive: true }); if (fs.readdirSync(AUD).length >= 300) return send(res, 507, { error: 'storage full' }); const id = crypto.randomBytes(16).toString('hex'); fs.writeFileSync(path.join(AUD, id + '.' + ext), b); return send(res, 200, { ok: true, url: '/media/' + id + '.' + ext }); } catch (e) { return send(res, 500, { error: 'write failed' }); }
+    }
+    const mm = p.match(/^\/media\/([0-9a-f]{32})\.(mp3|m4a|ogg|wav)$/);
+    if (mm && (req.method === 'GET' || req.method === 'HEAD')) {
+      const file = path.join(AUD, mm[1] + '.' + mm[2]); let st; try { st = fs.statSync(file); } catch (e) { return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' }); }
+      const h = { 'Content-Type': AEXT[mm[2]], 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' };
+      const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || ''); let s = 0, e = st.size - 1, code = 200;
+      if (r && (r[1] || r[2])) { if (r[1]) { s = +r[1]; if (r[2]) e = Math.min(+r[2], e); } else s = Math.max(0, st.size - +r[2]); if (s > e || s >= st.size) { res.writeHead(416, { 'Content-Range': 'bytes */' + st.size }); return res.end(); } code = 206; h['Content-Range'] = `bytes ${s}-${e}/${st.size}`; }
+      h['Content-Length'] = e - s + 1; res.writeHead(code, h); if (req.method === 'HEAD') return res.end();
+      return fs.createReadStream(file, { start: s, end: e }).pipe(res);
     }
     const m = p.match(/^\/api\/greetings\/([^/]+)$/);
     if (m) {

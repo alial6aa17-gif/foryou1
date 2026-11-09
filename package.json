@@ -1,6 +1,6 @@
 {
   "name": "foryou-store",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "FOR YOU gift shop - storefront + staff dashboards + e-greeting pages (zero-dependency Node server)",
   "main": "server.js",
